@@ -30,7 +30,7 @@ def reset_session():
     st.session_state.role_states = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.14]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.15]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -411,7 +411,6 @@ if uploaded_file is not None:
     if st.session_state.generated_html is not None:
         st.markdown("---")
         
-        # 🌟 プレビュー表示用のみに、仮のスクリプトとスタイルを一時的に結合する
         preview_fallback_script = """
 <style>
 #lstPicStory { list-style: none; padding: 0; margin: 0; }
@@ -471,14 +470,48 @@ document.addEventListener('DOMContentLoaded', function() {
 </body></html>"""
         
         preview_html = st.session_state.generated_html.replace('</body></html>', preview_fallback_script)
-        
-        # プレビュー表示には仮スクリプト入りのHTMLを使用
         components.html(preview_html, height=800, scrolling=True)
         
-        # 🌟 ダウンロードボタンには、純粋な本番仕様のHTMLをそのまま渡す
-        st.download_button(
-            label="📄 この内容でHTMLファイルを最終保存",
-            data=st.session_state.generated_html,
-            file_name="output.html",
-            mime="text/html"
-        )
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                label="📄 プレビュー中のHTMLファイルをダウンロード",
+                data=st.session_state.generated_html,
+                file_name="output.html",
+                mime="text/html"
+            )
+
+    # 🌟 編集済みPDFのダウンロード機能
+    st.markdown("---")
+    st.subheader("📥 編集済みPDFのダウンロード")
+    st.write("画面上で引いた赤線や太赤線の領域を、元のPDFに直接書き込んで保存します。")
+    
+    out_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+    scale = 72 / 150  # DPI=150のピクセル座標をPDF本来のポイント(72ppi)にスケール変換
+    
+    for p_num, lines in st.session_state.lines_by_page.items():
+        if lines:
+            out_page = out_pdf.load_page(p_num)
+            for line in lines:
+                y_px = line["y"]
+                y_pt = y_px * scale
+                if line["type"] == "通常線（境界）":
+                    p1 = fitz.Point(0, y_pt)
+                    p2 = fitz.Point(out_page.rect.width, y_pt)
+                    out_page.draw_line(p1, p2, color=(1, 0, 0), width=2)
+                else:
+                    t_px = line["thickness"]
+                    t_pt = t_px * scale
+                    rect = fitz.Rect(0, y_pt - t_pt/2, out_page.rect.width, y_pt + t_pt/2)
+                    shape = out_page.new_shape()
+                    shape.draw_rect(rect)
+                    shape.finish(color=None, fill=(1, 0, 0), fill_opacity=0.3)
+                    shape.commit()
+
+    pdf_out_bytes = out_pdf.tobytes()
+    st.download_button(
+        label="📄 赤線を引いたPDFをダウンロード",
+        data=pdf_out_bytes,
+        file_name=f"annotated_{st.session_state.file_name}",
+        mime="application/pdf"
+    )
