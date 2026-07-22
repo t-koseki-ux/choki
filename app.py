@@ -11,12 +11,9 @@ def trim_vertical_white_space(img, threshold=245):
     """画像の上下の白（またはほぼ白）領域を自動的にトリミングする"""
     rgb_img = img.convert("RGB")
     gray = rgb_img.convert("L")
-    # threshold以上の明るさ（ほぼ白）を黒(0)、それ以外（コンテンツ）を白(255)にして境界を明確にする
     bw = gray.point(lambda x: 0 if x >= threshold else 255)
     bbox = bw.getbbox()
     if bbox:
-        # bboxは (left, upper, right, lower)
-        # 左右は維持し、上下の余白のみをギリギリまでカット
         return img.crop((0, bbox[1], img.width, bbox[3]))
     return img
 
@@ -33,7 +30,7 @@ def reset_session():
     st.session_state.role_states = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.13]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.14]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -85,7 +82,6 @@ if uploaded_file is not None:
         template_type = st.radio("テンプレートの種類", ["読み物 (通常)", "択一問題 (単一選択)", "スライド式 (ストーリー)"])
         atom_id = st.text_input("atomid (JSON用)", value="GMT2P3Z1C154")
         
-        # 🌟 追加：画像を結合する際の空白サイズ設定
         concat_margin = st.slider("画像結合時の間の空白サイズ（px）", 0, 100, 20)
         
         correct_answer = ""
@@ -166,7 +162,6 @@ if uploaded_file is not None:
             
             if y_start < y_end:
                 crop_img = p_orig.crop((0, y_start, p_orig.width, y_end))
-                # 🌟 余白をさらにギリギリまでカット
                 crop_img = trim_vertical_white_space(crop_img)
                 
                 all_areas.append({
@@ -249,64 +244,6 @@ if uploaded_file is not None:
         if not all_areas:
             st.error("有効な切り出しエリアがありません。")
         else:
-            preview_fallback_script = """
-<style>
-#lstPicStory { list-style: none; padding: 0; margin: 0; }
-#lstPicStory > li { display: none; }
-#lstPicStory > li.lst-current { display: block; }
-.box-btn-show-picture { display: flex; align-items: center; justify-content: center; gap: 15px; margin: 20px 0; font-size: 1.2rem; font-weight: bold; }
-.btn-show-picture-prev, .btn-show-picture-next { cursor: pointer; padding: 8px 16px; border: 1px solid #ccc; background: #fff; border-radius: 4px; }
-.box-collapse-header { cursor: pointer; background: #f5f5f5; padding: 10px; border-bottom: 1px solid #ddd; margin-top: 10px; }
-.no-disp { display: none !important; }
-</style>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    const lis = document.querySelectorAll('#lstPicStory > li');
-    const len = lis.length;
-    let currentIdx = 0;
-    function updateSlide() {
-        lis.forEach((li, idx) => {
-            if (idx === currentIdx) {
-                li.classList.add('lst-current');
-                li.style.display = 'block';
-            } else {
-                li.classList.remove('lst-current');
-                li.style.display = 'none';
-            }
-        });
-        document.querySelectorAll('.txt-picture-current').forEach(el => el.textContent = currentIdx + 1);
-        document.querySelectorAll('.txt-picture-length').forEach(el => el.textContent = len);
-    }
-    if (len > 0) {
-        document.querySelectorAll('.btn-show-picture-prev').forEach(btn => {
-            btn.addEventListener('click', () => { if (currentIdx > 0) { currentIdx--; updateSlide(); } });
-        });
-        document.querySelectorAll('.btn-show-picture-next').forEach(btn => {
-            btn.addEventListener('click', () => { if (currentIdx < len - 1) { currentIdx++; updateSlide(); } });
-        });
-        updateSlide();
-    }
-
-    document.querySelectorAll('.box-collapse-header').forEach(header => {
-        header.addEventListener('click', function() {
-            const content = this.nextElementSibling;
-            if(content && content.classList.contains('box-collapsible')) {
-                content.classList.toggle('no-disp');
-            }
-        });
-    });
-    
-    const btnAnswer = document.getElementById('btnAnswer');
-    if (btnAnswer) {
-        btnAnswer.addEventListener('click', function() {
-            const boxAnswer = document.getElementById('boxAnswer');
-            if (boxAnswer) boxAnswer.classList.remove('no-disp');
-        });
-    }
-});
-</script>
-</body></html>"""
-
             def img_to_html_tags(img):
                 width, height = img.size
                 aspect_ratio = f"{width}/{height}"
@@ -321,7 +258,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 return f'<picture><source srcset="{webp_uri}" type="image/webp"><img src="{png_uri}" style="aspect-ratio: {aspect_ratio};"></picture>'
 
-            # 🌟 修正：間に挟む余白サイズを適用するよう変更
             def concat_images_vertically(img_list):
                 if not img_list:
                     return None
@@ -329,14 +265,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     return img_list[0]
                 
                 max_w = max(img.width for img in img_list)
-                # 画像の高さの合計 + 画像間にはさむ余白の合計
                 sum_h = sum(img.height for img in img_list) + concat_margin * (len(img_list) - 1)
                 
                 dst = Image.new('RGB', (max_w, sum_h), (255, 255, 255))
                 cy = 0
                 for img in img_list:
                     dst.paste(img, (0, cy))
-                    # 次の画像を貼り付けるY座標を計算（画像高さ＋余白サイズ）
                     cy += img.height + concat_margin
                 return dst
 
@@ -376,7 +310,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         c_tag = img_to_html_tags(role_images[f"選択肢 ({val})"])
                         choices_html += f'<li><input type="radio" name="radio-01" value="{val}"><label>{c_tag}</label></li>\n'
 
-                base_html = f"""<!DOCTYPE html>
+                st.session_state.generated_html = f"""<!DOCTYPE html>
 <html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
 <link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
 <script type="application/json" id="contentsMetadata">
@@ -389,7 +323,6 @@ document.addEventListener('DOMContentLoaded', function() {
 <p>{ans_tag}</p><h2>解説</h2><p>{exp_tag}</p></div></section>
 </main>
 <script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
-                st.session_state.generated_html = base_html.replace('</body></html>', preview_fallback_script)
 
             elif template_type == "スライド式 (ストーリー)":
                 role_images_lists = {}
@@ -464,7 +397,7 @@ document.addEventListener('DOMContentLoaded', function() {
             <button type="button" class="box-shadow-2dp btn-show-picture-next">次へ ▶</button>
         </section>\n'''
 
-                base_html = f"""<!DOCTYPE html>
+                st.session_state.generated_html = f"""<!DOCTYPE html>
 <html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
 <link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
 <script type="application/json" id="contentsMetadata">
@@ -474,14 +407,75 @@ document.addEventListener('DOMContentLoaded', function() {
 {slides_html}       </ul>
 {btn_controls}  </main>
 <script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
-                
-                st.session_state.generated_html = base_html.replace('</body></html>', preview_fallback_script)
-
-            # 🌟 修正：「設定がリセットされる」不具合の原因だった st.rerun() を削除しました
 
     if st.session_state.generated_html is not None:
         st.markdown("---")
-        components.html(st.session_state.generated_html, height=800, scrolling=True)
+        
+        # 🌟 プレビュー表示用のみに、仮のスクリプトとスタイルを一時的に結合する
+        preview_fallback_script = """
+<style>
+#lstPicStory { list-style: none; padding: 0; margin: 0; }
+#lstPicStory > li { display: none; }
+#lstPicStory > li.lst-current { display: block; }
+.box-btn-show-picture { display: flex; align-items: center; justify-content: center; gap: 15px; margin: 20px 0; font-size: 1.2rem; font-weight: bold; }
+.btn-show-picture-prev, .btn-show-picture-next { cursor: pointer; padding: 8px 16px; border: 1px solid #ccc; background: #fff; border-radius: 4px; }
+.box-collapse-header { cursor: pointer; background: #f5f5f5; padding: 10px; border-bottom: 1px solid #ddd; margin-top: 10px; }
+.no-disp { display: none !important; }
+</style>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const lis = document.querySelectorAll('#lstPicStory > li');
+    const len = lis.length;
+    let currentIdx = 0;
+    function updateSlide() {
+        lis.forEach((li, idx) => {
+            if (idx === currentIdx) {
+                li.classList.add('lst-current');
+                li.style.display = 'block';
+            } else {
+                li.classList.remove('lst-current');
+                li.style.display = 'none';
+            }
+        });
+        document.querySelectorAll('.txt-picture-current').forEach(el => el.textContent = currentIdx + 1);
+        document.querySelectorAll('.txt-picture-length').forEach(el => el.textContent = len);
+    }
+    if (len > 0) {
+        document.querySelectorAll('.btn-show-picture-prev').forEach(btn => {
+            btn.addEventListener('click', () => { if (currentIdx > 0) { currentIdx--; updateSlide(); } });
+        });
+        document.querySelectorAll('.btn-show-picture-next').forEach(btn => {
+            btn.addEventListener('click', () => { if (currentIdx < len - 1) { currentIdx++; updateSlide(); } });
+        });
+        updateSlide();
+    }
+
+    document.querySelectorAll('.box-collapse-header').forEach(header => {
+        header.addEventListener('click', function() {
+            const content = this.nextElementSibling;
+            if(content && content.classList.contains('box-collapsible')) {
+                content.classList.toggle('no-disp');
+            }
+        });
+    });
+    
+    const btnAnswer = document.getElementById('btnAnswer');
+    if (btnAnswer) {
+        btnAnswer.addEventListener('click', function() {
+            const boxAnswer = document.getElementById('boxAnswer');
+            if (boxAnswer) boxAnswer.classList.remove('no-disp');
+        });
+    }
+});
+</script>
+</body></html>"""
+        
+        preview_html = st.session_state.generated_html.replace('</body></html>', preview_fallback_script)
+        
+        # プレビュー表示には仮スクリプト入りのHTMLを使用
+        components.html(preview_html, height=800, scrolling=True)
+        
+        # 🌟 ダウンロードボタンには、純粋な本番仕様のHTMLをそのまま渡す
         st.download_button(
             label="📄 この内容でHTMLファイルを最終保存",
             data=st.session_state.generated_html,
