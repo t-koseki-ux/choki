@@ -6,11 +6,10 @@ import base64
 from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
-# --- 🌟 改善点①：ファイル変更検知による前回のデータ完全クリア ---
+# --- ファイル変更検知による前回のデータ完全クリア ---
 if "file_name" not in st.session_state:
     st.session_state.file_name = None
 
-# セッションクリア用の関数
 def reset_session():
     st.session_state.lines_by_page = {}
     st.session_state.current_page = 0
@@ -20,19 +19,16 @@ def reset_session():
     st.session_state.concat_states = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.7]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.8 (指定テンプレート版)]")
 
-# 1. PDFのアップロード
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
 if uploaded_file is not None:
-    # 🌟 ファイル名が変わったら自動で前回の赤線データをすべてリセット
     if st.session_state.file_name != uploaded_file.name:
         reset_session()
         st.session_state.file_name = uploaded_file.name
         st.rerun()
 
-    # PDFをPyMuPDFで読み込み
     pdf_bytes = uploaded_file.read()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = doc.page_count
@@ -41,7 +37,6 @@ if uploaded_file is not None:
     with st.sidebar:
         st.header("🛠️ 操作パネル")
         
-        # ページナビゲーション
         st.subheader("ページ移動")
         col_prev, col_next = st.columns(2)
         with col_prev:
@@ -56,7 +51,6 @@ if uploaded_file is not None:
         st.markdown(f"**現在の位置:** {st.session_state.current_page + 1} / {total_pages} ページ")
         st.markdown("---")
 
-        # モード選択
         st.subheader("マウスの動作設定")
         action_mode = st.radio("クリック時の動作", ["✒️ 線を引く", "🗑️ 線を消す（線を直接クリック）"])
         
@@ -76,22 +70,21 @@ if uploaded_file is not None:
             st.rerun()
 
         st.markdown("---")
-        st.subheader("HTMLデザイン設定")
-        layout_pattern = st.selectbox("画面パターン", ["パターンA（中央揃え）", "パターンB（左揃え）", "パターンC（枠線あり）"])
+        st.subheader("HTML / メタデータ設定")
+        # 🌟 テンプレート用のatomidを入力できるように変更
+        atom_id = st.text_input("atomid (JSON用)", value="CMV1J1Z11LI1")
 
-    # --- メインエリア：現在のページの線リストを初期化 ---
+    # --- メインエリア：画像の表示と線引き ---
     if st.session_state.current_page not in st.session_state.lines_by_page:
         st.session_state.lines_by_page[st.session_state.current_page] = []
     
     current_lines = st.session_state.lines_by_page[st.session_state.current_page]
 
-    # 現在のページを画像化
     page = doc.load_page(st.session_state.current_page)
     pix = page.get_pixmap(dpi=150)
     img_original = Image.open(io.BytesIO(pix.tobytes("png")))
     img_display = img_original.convert("RGBA")
     
-    # 画像上に線を引く
     overlay = Image.new("RGBA", img_display.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
     
@@ -166,14 +159,11 @@ if uploaded_file is not None:
                     "img": crop_img
                 })
 
-    # ==========================================
-    # 🌟 改善点②：コンテナを用いた視覚的・直感的な連結UI
-    # ==========================================
+    # --- 🔗 コンテナを用いた視覚的・直感的な連結UI ---
     if all_areas:
         st.subheader("🔗 切り出しエリアの視覚的連結設定")
         st.write("同じ外枠（コンテナ）に囲まれている画像同士が縦に連結されます。画像間のボタンで直感的に結合・解除が可能です。")
         
-        # 連結状態を基に、表示用のビジュアルグループを組み立てる
         visual_groups = []
         current_g = [all_areas[0]]
         current_idxs = [0]
@@ -190,13 +180,10 @@ if uploaded_file is not None:
                 current_idxs = [idx+1]
         visual_groups.append({"areas": current_g, "idxs": current_idxs})
         
-        # 視覚的グループごとに枠線(container)を作って表示
-        global_idx = 0
         for g_idx, group in enumerate(visual_groups):
             areas = group["areas"]
             idxs = group["idxs"]
             
-            # 連結しているものは目立つ外枠、単独のものは通常の枠
             with st.container(border=True):
                 if len(areas) > 1:
                     st.markdown(f"<span style='color:#e74c3c; font-weight:bold; background-color:#fadbd8; padding:3px 10px; border-radius:4px;'>🔗 連結中（画像 {idxs[0]+1} ～ {idxs[-1]+1} の結合ブロック）</span>", unsafe_allow_html=True)
@@ -207,7 +194,6 @@ if uploaded_file is not None:
                     st.caption(f"画像 {idxs[m_idx]+1} (ページ {area['p_num']+1})")
                     st.image(area['img'], width=350)
                     
-                    # グループ内の画像同士の間＝「現在連結されている箇所」なので、ここに解除ボタンを設置
                     if m_idx < len(areas) - 1:
                         state_key = f"link_{area['p_num']}_{int(area['y_start'])}"
                         col_un1, col_un2 = st.columns([1, 4])
@@ -217,7 +203,6 @@ if uploaded_file is not None:
                                 st.session_state.generated_html = None
                                 st.rerun()
             
-            # グループとグループの間＝「現在切り離されている箇所」なので、ここに連結ボタンを設置
             if g_idx < len(visual_groups) - 1:
                 last_area_in_group = areas[-1]
                 last_global_idx = idxs[-1]
@@ -232,7 +217,7 @@ if uploaded_file is not None:
                         
         st.markdown("---")
 
-    # --- データ生成エリア ---
+    # --- 🚀 データ生成とプレビュー ---
     st.subheader("🚀 データ生成とプレビュー")
     col_pdf, col_html = st.columns(2)
     
@@ -267,56 +252,85 @@ if uploaded_file is not None:
             if not all_areas:
                 st.error("有効な切り出しエリアがありません。線を引き直してください。")
             else:
-                # 確定したビジュアルグループ（visual_groups）を基にHTMLをビルド
                 img_tags = ""
                 for group in visual_groups:
                     imgs = [a["img"] for a in group["areas"]]
-                    idxs = group["idxs"]
                     
+                    # 連結処理
                     if len(imgs) > 1:
                         total_height = sum(c.height for c in imgs)
                         max_width = max(c.width for c in imgs)
                         dst = Image.new('RGB', (max_width, total_height))
-                        
                         current_y = 0
                         for c in imgs:
                             dst.paste(c, (0, current_y))
                             current_y += c.height
-                        
-                        labels = ", ".join([f"画像{k+1}" for k in idxs])
-                        img_tags += f'<div style="font-weight: bold; font-size: 1.1em; color: #e74c3c; margin-bottom: 5px; text-align: left;">▼ 連結画像（{labels} の結合）</div>'
                         final_img = dst
                     else:
-                        img_tags += f'<div style="font-weight: bold; font-size: 1.1em; color: #34495e; margin-bottom: 5px; text-align: left;">■ 画像 {idxs[0]+1}</div>'
                         final_img = imgs[0]
                     
-                    buffered = io.BytesIO()
-                    final_img.save(buffered, format="PNG")
-                    img_str = base64.b64encode(buffered.getvalue()).decode()
-                    img_tags += f'<img src="data:image/png;base64,{img_str}" style="max-width: 100%; height: auto; margin-bottom: 25px;" /><br>\n'
+                    # 🌟 自動計算と画像エンコード (WebP & PNG)
+                    width, height = final_img.size
+                    aspect_ratio = f"{width}/{height}"
+                    
+                    buffered_png = io.BytesIO()
+                    final_img.save(buffered_png, format="PNG")
+                    png_str = base64.b64encode(buffered_png.getvalue()).decode()
+                    png_uri = f"data:image/png;base64,{png_str}"
+                    
+                    buffered_webp = io.BytesIO()
+                    final_img.save(buffered_webp, format="WEBP")
+                    webp_str = base64.b64encode(buffered_webp.getvalue()).decode()
+                    webp_uri = f"data:image/webp;base64,{webp_str}"
 
-                css_style = "text-align: center;" if layout_pattern == "パターンA（中央揃え）" else "text-align: left;"
-                if layout_pattern == "パターンC（枠線あり）":
-                    css_style += " border: 2px solid #333; padding: 20px;"
+                    # 🌟 ご指定のセクションテンプレート
+                    img_tags += f"""		<section class="box-shadow-1dp">
+			<p>
+				<picture>
+					<source srcset="{webp_uri}" type="image/webp">
+					<img src="{png_uri}" style="aspect-ratio: {aspect_ratio};">
+				</picture>
+			</p>
+		</section>\n"""
 
-                st.session_state.generated_html = f"""
-                <!DOCTYPE html>
-                <html lang="ja">
-                <head><meta charset="UTF-8"><title>出力結果</title></head>
-                <body style="background-color: #f5f6fa; padding: 30px; font-family: sans-serif;">
-                    <div style="background-color: #fff; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); {css_style}">
-                        <h3 style="border-bottom: 2px solid #ddd; padding-bottom: 10px; color: #2f3640;">HTML出力結果（デザイン: {layout_pattern}）</h3>
-                        <div style="margin-top: 20px;">{img_tags}</div>
-                    </div>
-                </body>
-                </html>
-                """
+                # 🌟 ご指定のHTML全体テンプレート
+                st.session_state.generated_html = f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<title>Ｚ会学習アプリ</title>
+	<link rel="stylesheet" href="../../css/reset.min.css">
+	<link rel="stylesheet" href="../../css/base.min.css">
+	<link rel="stylesheet" href="../../css/custom_main.min.css" />
+	<script type="application/json" id="contentsMetadata">
+		{{
+			"atomid": "{atom_id}",
+			"style": "read-only",
+			"answer": "",
+			"version": "1"
+		}}
+	</script>
+</head>
+<body>
+	<main class="box-margin">
+{img_tags}	</main>
+	<script src="../../contentsInterface/ContentsInterface.js"></script>
+	<script src="../../js/lib/jquery.min.js"></script>
+	<script src="../../js/lib/jquery-ui.min.js"></script>
+	<script src="../../js/lib/jquery.ui.touch-punch.min.js"></script>
+	<script src="../../js/custom.min.js"></script>
+	<script src="../../js/answer_main.min.js"></script>
+	<script src="../../js/zkai_webfont.js"></script>
+</body>
+</html>"""
                 st.rerun()
 
-    # HTMLリアルタイムプレビュー
     if st.session_state.generated_html is not None:
         st.markdown("---")
         st.subheader("🖥️ 生成されたHTMLのリアルタイムプレビュー")
+        st.caption("※相対パス（../../css/等）のスタイルシートはプレビュー画面上では読み込まれないため、CSSが外れた状態で表示されますが、ダウンロード後のファイルでは正常に適用されます。")
         components.html(st.session_state.generated_html, height=800, scrolling=True)
         
         st.download_button(
