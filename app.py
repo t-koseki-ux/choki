@@ -6,7 +6,6 @@ import base64
 from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
-# --- ファイル変更検知による前回のデータ完全クリア ---
 if "file_name" not in st.session_state:
     st.session_state.file_name = None
 
@@ -17,9 +16,10 @@ def reset_session():
     st.session_state.last_coord = None
     st.session_state.generated_html = None
     st.session_state.concat_states = {}
+    st.session_state.role_states = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.8 (指定テンプレート版)]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.10]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -33,10 +33,9 @@ if uploaded_file is not None:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = doc.page_count
 
-    # --- 左側サイドバー（操作パネル） ---
+    # --- 操作パネル ---
     with st.sidebar:
         st.header("🛠️ 操作パネル")
-        
         st.subheader("ページ移動")
         col_prev, col_next = st.columns(2)
         with col_prev:
@@ -47,7 +46,6 @@ if uploaded_file is not None:
             if st.button("次ページ ▶") and st.session_state.current_page < total_pages - 1:
                 st.session_state.current_page += 1
                 st.rerun()
-        
         st.markdown(f"**現在の位置:** {st.session_state.current_page + 1} / {total_pages} ページ")
         st.markdown("---")
 
@@ -57,7 +55,6 @@ if uploaded_file is not None:
         st.markdown("---")
         st.subheader("線の種類と太さ")
         line_type = st.radio("引く線の種類", ["通常線（境界）", "太赤線（この範囲を除外）"])
-        
         thick_size = 0
         if line_type == "太赤線（この範囲を除外）":
             thick_size = st.slider("太赤線の太さ（px）", 10, 200, 40)
@@ -70,14 +67,17 @@ if uploaded_file is not None:
             st.rerun()
 
         st.markdown("---")
-        st.subheader("HTML / メタデータ設定")
-        # 🌟 テンプレート用のatomidを入力できるように変更
-        atom_id = st.text_input("atomid (JSON用)", value="CMV1J1Z11LI1")
+        st.subheader("出力テンプレート設定")
+        template_type = st.radio("テンプレートの種類", ["読み物 (通常)", "択一問題 (単一選択)", "スライド式 (ストーリー)"])
+        atom_id = st.text_input("atomid (JSON用)", value="GMT2P3Z1C154")
+        
+        correct_answer = ""
+        if template_type == "択一問題 (単一選択)":
+            correct_answer = st.text_input("正答 (例: 101)", value="101")
 
     # --- メインエリア：画像の表示と線引き ---
     if st.session_state.current_page not in st.session_state.lines_by_page:
         st.session_state.lines_by_page[st.session_state.current_page] = []
-    
     current_lines = st.session_state.lines_by_page[st.session_state.current_page]
 
     page = doc.load_page(st.session_state.current_page)
@@ -99,7 +99,6 @@ if uploaded_file is not None:
     img_display = Image.alpha_composite(img_display, overlay).convert("RGB")
 
     st.markdown(f"### 📄 プレビュー (ページ {st.session_state.current_page + 1})")
-    
     value = streamlit_image_coordinates(
         img_display, 
         key=f"pdf_img_p{st.session_state.current_page}_k{st.session_state.img_key}"
@@ -114,7 +113,6 @@ if uploaded_file is not None:
             if "線を引く" in action_mode:
                 if not any(l["y"] == clicked_y for l in current_lines):
                     current_lines.append({"y": clicked_y, "type": line_type, "thickness": thick_size})
-            
             elif "線を消す" in action_mode:
                 closest_i = -1
                 min_dist = 20
@@ -132,7 +130,7 @@ if uploaded_file is not None:
 
     st.markdown("---")
 
-    # --- 全ページの切り出しエリア事前計算 ---
+    # --- 切り出しエリア事前計算 ---
     all_areas = []
     for p_num in sorted(st.session_state.lines_by_page.keys()):
         p_lines = st.session_state.lines_by_page[p_num]
@@ -146,195 +144,249 @@ if uploaded_file is not None:
         for i in range(len(p_lines) - 1):
             line_a = p_lines[i]
             line_b = p_lines[i+1]
-            
             y_start = line_a["y"] + (line_a["thickness"] // 2 if line_a["type"] != "通常線（境界）" else 0)
             y_end = line_b["y"] - (line_b["thickness"] // 2 if line_b["type"] != "通常線（境界）" else 0)
             
             if y_start < y_end:
                 crop_img = p_orig.crop((0, y_start, p_orig.width, y_end))
                 all_areas.append({
+                    "id": f"img_{p_num}_{int(y_start)}",
                     "p_num": p_num,
                     "y_start": y_start,
-                    "y_end": y_end,
                     "img": crop_img
                 })
 
-    # --- 🔗 コンテナを用いた視覚的・直感的な連結UI ---
+    # --- UIの出し分け ---
     if all_areas:
-        st.subheader("🔗 切り出しエリアの視覚的連結設定")
-        st.write("同じ外枠（コンテナ）に囲まれている画像同士が縦に連結されます。画像間のボタンで直感的に結合・解除が可能です。")
+        st.subheader("🧩 切り出しエリアの設定")
         
-        visual_groups = []
-        current_g = [all_areas[0]]
-        current_idxs = [0]
-        
-        for idx in range(len(all_areas) - 1):
-            area = all_areas[idx]
-            state_key = f"link_{area['p_num']}_{int(area['y_start'])}"
-            if st.session_state.concat_states.get(state_key, False):
-                current_g.append(all_areas[idx+1])
-                current_idxs.append(idx+1)
-            else:
-                visual_groups.append({"areas": current_g, "idxs": current_idxs})
-                current_g = [all_areas[idx+1]]
-                current_idxs = [idx+1]
-        visual_groups.append({"areas": current_g, "idxs": current_idxs})
-        
-        for g_idx, group in enumerate(visual_groups):
-            areas = group["areas"]
-            idxs = group["idxs"]
+        if template_type == "読み物 (通常)":
+            st.write("同じ外枠に囲まれている画像同士が縦に連結されます。")
+            visual_groups = []
+            current_g = [all_areas[0]]
+            current_idxs = [0]
             
-            with st.container(border=True):
-                if len(areas) > 1:
-                    st.markdown(f"<span style='color:#e74c3c; font-weight:bold; background-color:#fadbd8; padding:3px 10px; border-radius:4px;'>🔗 連結中（画像 {idxs[0]+1} ～ {idxs[-1]+1} の結合ブロック）</span>", unsafe_allow_html=True)
+            for idx in range(len(all_areas) - 1):
+                area = all_areas[idx]
+                state_key = f"link_{area['id']}"
+                if st.session_state.concat_states.get(state_key, False):
+                    current_g.append(all_areas[idx+1])
+                    current_idxs.append(idx+1)
                 else:
-                    st.markdown(f"<span style='color:#34495e; font-weight:bold; background-color:#eaeded; padding:3px 10px; border-radius:4px;'>■ 単独（画像 {idxs[0]+1}）</span>", unsafe_allow_html=True)
-                
-                for m_idx, area in enumerate(areas):
-                    st.caption(f"画像 {idxs[m_idx]+1} (ページ {area['p_num']+1})")
-                    st.image(area['img'], width=350)
-                    
-                    if m_idx < len(areas) - 1:
-                        state_key = f"link_{area['p_num']}_{int(area['y_start'])}"
-                        col_un1, col_un2 = st.columns([1, 4])
-                        with col_un1:
-                            if st.button("🔓 連結解除", key=f"btn_unlink_{idxs[m_idx]}"):
-                                st.session_state.concat_states[state_key] = False
-                                st.session_state.generated_html = None
-                                st.rerun()
+                    visual_groups.append({"areas": current_g, "idxs": current_idxs})
+                    current_g = [all_areas[idx+1]]
+                    current_idxs = [idx+1]
+            visual_groups.append({"areas": current_g, "idxs": current_idxs})
             
-            if g_idx < len(visual_groups) - 1:
-                last_area_in_group = areas[-1]
-                last_global_idx = idxs[-1]
-                state_key = f"link_{last_area_in_group['p_num']}_{int(last_area_in_group['y_start'])}"
-                
-                col_b1, col_b2, col_b3 = st.columns([1, 2, 1])
-                with col_b2:
-                    if st.button(f"⬇️ 上の「画像 {last_global_idx+1}」と 下の「画像 {last_global_idx+2}」を連結する ⬇️", key=f"btn_link_{last_global_idx}"):
-                        st.session_state.concat_states[state_key] = True
-                        st.session_state.generated_html = None
+            for g_idx, group in enumerate(visual_groups):
+                areas = group["areas"]
+                idxs = group["idxs"]
+                with st.container(border=True):
+                    for m_idx, area in enumerate(areas):
+                        st.caption(f"画像 {idxs[m_idx]+1}")
+                        st.image(area['img'], width=350)
+                        if m_idx < len(areas) - 1:
+                            if st.button("🔓 連結解除", key=f"btn_unlink_{idxs[m_idx]}"):
+                                st.session_state.concat_states[f"link_{area['id']}"] = False
+                                st.rerun()
+                if g_idx < len(visual_groups) - 1:
+                    last_area = areas[-1]
+                    if st.button(f"⬇️ 連結する ⬇️", key=f"btn_link_{idxs[-1]}"):
+                        st.session_state.concat_states[f"link_{last_area['id']}"] = True
                         st.rerun()
+
+        else:
+            if template_type == "択一問題 (単一選択)":
+                roles_options = ["除外する", "設問", "選択肢 (101)", "選択肢 (102)", "選択肢 (103)", "選択肢 (104)", "解答", "解説"]
+            elif template_type == "スライド式 (ストーリー)":
+                # 🌟 最大10スライド分まで役割の選択肢を動的生成
+                roles_options = ["除外する", "全体の問題文"]
+                for i in range(1, 11):
+                    roles_options.extend([f"スライド{i}: 設問", f"スライド{i}: 解答", f"スライド{i}: 解説"])
+            
+            for idx, area in enumerate(all_areas):
+                with st.container(border=True):
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.image(area['img'], width=250)
+                    with col2:
+                        state_key = f"role_{area['id']}"
+                        if state_key not in st.session_state.role_states:
+                            st.session_state.role_states[state_key] = roles_options[0]
                         
-        st.markdown("---")
+                        selected_role = st.selectbox(
+                            f"画像 {idx+1} の役割", 
+                            roles_options, 
+                            index=roles_options.index(st.session_state.role_states[state_key]) if st.session_state.role_states[state_key] in roles_options else 0,
+                            key=f"sb_{state_key}"
+                        )
+                        st.session_state.role_states[state_key] = selected_role
 
-    # --- 🚀 データ生成とプレビュー ---
-    st.subheader("🚀 データ生成とプレビュー")
-    col_pdf, col_html = st.columns(2)
+    st.markdown("---")
     
-    with col_pdf:
-        if any(len(lines) > 0 for lines in st.session_state.lines_by_page.values()):
-            if st.button("📥 全ページの赤入れPDFを生成"):
-                pdf_pages = []
-                for p_num in range(total_pages):
-                    p = doc.load_page(p_num)
-                    p_pix = p.get_pixmap(dpi=150)
-                    p_img = Image.open(io.BytesIO(p_pix.tobytes("png"))).convert("RGBA")
-                    
-                    if p_num in st.session_state.lines_by_page and st.session_state.lines_by_page[p_num]:
-                        p_overlay = Image.new("RGBA", p_img.size, (255, 255, 255, 0))
-                        p_draw = ImageDraw.Draw(p_overlay)
-                        for line in st.session_state.lines_by_page[p_num]:
-                            y = line["y"]
-                            if line["type"] == "通常線（境界）":
-                                p_draw.line([(0, y), (p_img.width, y)], fill=(255, 0, 0, 255), width=3)
-                            else:
-                                t = line["thickness"]
-                                p_draw.rectangle([(0, y - t//2), (p_img.width, y + t//2)], fill=(255, 0, 0, 100))
-                        p_img = Image.alpha_composite(p_img, p_overlay)
-                    pdf_pages.append(p_img.convert("RGB"))
+    # --- データ生成とHTML出力 ---
+    st.subheader("🚀 HTML生成とプレビュー")
+    if st.button("💻 HTMLを生成・更新する", type="primary"):
+        if not all_areas:
+            st.error("有効な切り出しエリアがありません。")
+        else:
+            def img_to_html_tags(img):
+                width, height = img.size
+                aspect_ratio = f"{width}/{height}"
                 
-                pdf_buffer = io.BytesIO()
-                pdf_pages[0].save(pdf_buffer, format="PDF", save_all=True, append_images=pdf_pages[1:], resolution=150)
-                st.download_button("赤入れPDFをダウンロードする", data=pdf_buffer.getvalue(), file_name="annotated.pdf")
+                buffered_png = io.BytesIO()
+                img.save(buffered_png, format="PNG")
+                png_uri = f"data:image/png;base64,{base64.b64encode(buffered_png.getvalue()).decode()}"
+                
+                buffered_webp = io.BytesIO()
+                img.save(buffered_webp, format="WEBP")
+                webp_uri = f"data:image/webp;base64,{base64.b64encode(buffered_webp.getvalue()).decode()}"
+                
+                return f'<picture><source srcset="{webp_uri}" type="image/webp"><img src="{png_uri}" style="aspect-ratio: {aspect_ratio};"></picture>'
 
-    with col_html:
-        if st.button("💻 選択した設定でHTMLを生成・更新する", type="primary"):
-            if not all_areas:
-                st.error("有効な切り出しエリアがありません。線を引き直してください。")
-            else:
-                img_tags = ""
+            if template_type == "読み物 (通常)":
+                img_tags_out = ""
                 for group in visual_groups:
                     imgs = [a["img"] for a in group["areas"]]
-                    
-                    # 連結処理
                     if len(imgs) > 1:
-                        total_height = sum(c.height for c in imgs)
-                        max_width = max(c.width for c in imgs)
-                        dst = Image.new('RGB', (max_width, total_height))
-                        current_y = 0
+                        dst = Image.new('RGB', (max(c.width for c in imgs), sum(c.height for c in imgs)))
+                        cy = 0
                         for c in imgs:
-                            dst.paste(c, (0, current_y))
-                            current_y += c.height
+                            dst.paste(c, (0, cy))
+                            cy += c.height
                         final_img = dst
                     else:
                         final_img = imgs[0]
-                    
-                    # 🌟 自動計算と画像エンコード (WebP & PNG)
-                    width, height = final_img.size
-                    aspect_ratio = f"{width}/{height}"
-                    
-                    buffered_png = io.BytesIO()
-                    final_img.save(buffered_png, format="PNG")
-                    png_str = base64.b64encode(buffered_png.getvalue()).decode()
-                    png_uri = f"data:image/png;base64,{png_str}"
-                    
-                    buffered_webp = io.BytesIO()
-                    final_img.save(buffered_webp, format="WEBP")
-                    webp_str = base64.b64encode(buffered_webp.getvalue()).decode()
-                    webp_uri = f"data:image/webp;base64,{webp_str}"
+                    img_tags_out += f'<section class="box-shadow-1dp"><p>{img_to_html_tags(final_img)}</p></section>\n'
 
-                    # 🌟 ご指定のセクションテンプレート
-                    img_tags += f"""		<section class="box-shadow-1dp">
-			<p>
-				<picture>
-					<source srcset="{webp_uri}" type="image/webp">
-					<img src="{png_uri}" style="aspect-ratio: {aspect_ratio};">
-				</picture>
-			</p>
-		</section>\n"""
-
-                # 🌟 ご指定のHTML全体テンプレート
                 st.session_state.generated_html = f"""<!DOCTYPE html>
-<html lang="ja">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0">
-	<meta http-equiv="X-UA-Compatible" content="IE=edge">
-	<title>Ｚ会学習アプリ</title>
-	<link rel="stylesheet" href="../../css/reset.min.css">
-	<link rel="stylesheet" href="../../css/base.min.css">
-	<link rel="stylesheet" href="../../css/custom_main.min.css" />
-	<script type="application/json" id="contentsMetadata">
-		{{
-			"atomid": "{atom_id}",
-			"style": "read-only",
-			"answer": "",
-			"version": "1"
-		}}
-	</script>
-</head>
-<body>
-	<main class="box-margin">
-{img_tags}	</main>
-	<script src="../../contentsInterface/ContentsInterface.js"></script>
-	<script src="../../js/lib/jquery.min.js"></script>
-	<script src="../../js/lib/jquery-ui.min.js"></script>
-	<script src="../../js/lib/jquery.ui.touch-punch.min.js"></script>
-	<script src="../../js/custom.min.js"></script>
-	<script src="../../js/answer_main.min.js"></script>
-	<script src="../../js/zkai_webfont.js"></script>
-</body>
-</html>"""
-                st.rerun()
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
+<link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
+<script type="application/json" id="contentsMetadata">
+{{"atomid": "{atom_id}", "style": "read-only", "answer": "", "version": "1"}}
+</script></head><body><main class="box-margin">
+{img_tags_out}</main>
+<script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
+
+            elif template_type == "択一問題 (単一選択)":
+                role_images = {}
+                for area in all_areas:
+                    role = st.session_state.role_states.get(f"role_{area['id']}", "除外する")
+                    role_images[role] = area['img']
+                
+                q_tag = img_to_html_tags(role_images["設問"]) if "設問" in role_images else ""
+                ans_tag = img_to_html_tags(role_images["解答"]) if "解答" in role_images else ""
+                exp_tag = img_to_html_tags(role_images["解説"]) if "解説" in role_images else ""
+                
+                choices_html = ""
+                for val in ["101", "102", "103", "104"]:
+                    if f"選択肢 ({val})" in role_images:
+                        c_tag = img_to_html_tags(role_images[f"選択肢 ({val})"])
+                        choices_html += f'<li><input type="radio" name="radio-01" value="{val}"><label>{c_tag}</label></li>\n'
+
+                st.session_state.generated_html = f"""<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
+<link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
+<script type="application/json" id="contentsMetadata">
+{{"atomid": "{atom_id}", "style": "single-choice", "answer": ["{correct_answer}"], "version": "1"}}
+</script></head><body><main class="box-margin">
+<section class="box-shadow-1dp" id="boxSubQuestion"><div class="box-collapse-header"><h2>設問</h2></div><div class="box-collapsible">
+<p>{q_tag}</p><ul class="sel-item-border lst-img-radio">{choices_html}</ul></div></section>
+<section class="box-btn-answer" id="boxBtnAnswer"><button type="button" class="btn-set-next btn-std box-shadow-2dp" id="btnAnswer">解答する</button></section>
+<section class="box-shadow-1dp no-disp" id="boxAnswer"><div class="box-collapse-header"><h2>解答</h2></div><div class="box-collapsible">
+<p>{ans_tag}</p><h2>解説</h2><p>{exp_tag}</p></div></section>
+</main>
+<script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
+
+            elif template_type == "スライド式 (ストーリー)":
+                role_images = {}
+                for area in all_areas:
+                    role = st.session_state.role_states.get(f"role_{area['id']}", "除外する")
+                    role_images[role] = area['img']
+
+                # 全体の問題文
+                q_global = role_images.get("全体の問題文")
+                global_html = ""
+                if q_global:
+                    global_html = f'''		<section class="box-shadow-1dp">
+			<div class="box-collapse-header box-expand">
+				<h2>問題文</h2>
+			</div>
+			<div class="box-collapsible no-disp">
+				<p>{img_to_html_tags(q_global)}</p>
+			</div>
+		</section>\n'''
+
+                # スライド部分の生成
+                slides_html = ""
+                max_slide = 0
+                for role in role_images.keys():
+                    if role.startswith("スライド"):
+                        try:
+                            s_num = int(role.split("スライド")[1].split(":")[0])
+                            max_slide = max(max_slide, s_num)
+                        except:
+                            pass
+
+                for i in range(1, max_slide + 1):
+                    s_q = role_images.get(f"スライド{i}: 設問")
+                    s_a = role_images.get(f"スライド{i}: 解答")
+                    s_e = role_images.get(f"スライド{i}: 解説")
+
+                    if not s_q and not s_a and not s_e:
+                        continue
+
+                    li_class = ' class="lst-current"' if i == 1 else ''
+                    slides_html += f'			<li{li_class}>\n'
+
+                    if s_q:
+                        slides_html += f'''				<section class="box-shadow-1dp">
+					<div class="box-collapse-header">
+						<h2>設問</h2>
+					</div>
+					<div class="box-collapsible">
+						<p>{img_to_html_tags(s_q)}</p>
+					</div>
+				</section>\n'''
+                    if s_a or s_e:
+                        slides_html += f'''				<section class="box-shadow-1dp">
+					<div class="box-collapse-header">
+						<h2>解答</h2>
+					</div>
+					<div class="box-collapsible">\n'''
+                        if s_a:
+                            slides_html += f'						<p>{img_to_html_tags(s_a)}</p>\n'
+                        if s_e:
+                            slides_html += f'						<h2>解説</h2>\n						<p>{img_to_html_tags(s_e)}</p>\n'
+                        slides_html += '					</div>\n				</section>\n'
+                    slides_html += '			</li>\n'
+
+                btn_controls = '''		<section class="box-btn-show-picture">
+			<button type="button" class="box-shadow-2dp btn-show-picture-prev"><img src="../../images/arrow_back-24px.svg" alt="←"></button>
+			<span class="txt-picture-current"></span>
+			/
+			<span class="txt-picture-length"></span>
+			<button type="button" class="box-shadow-2dp btn-show-picture-next"><img src="../../images/arrow_forward-24px.svg" alt="→"></button>
+		</section>\n'''
+
+                st.session_state.generated_html = f"""<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
+<link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
+<script type="application/json" id="contentsMetadata">
+{{"atomid": "{atom_id}", "style": "read-only", "answer": "", "version": "1"}}
+</script></head><body>	<main class="box-margin">
+{global_html}{btn_controls}		<ul class="lst-pic-story" id="lstPicStory">
+{slides_html}		</ul>
+{btn_controls}	</main>
+<script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
+
+            st.rerun()
 
     if st.session_state.generated_html is not None:
         st.markdown("---")
-        st.subheader("🖥️ 生成されたHTMLのリアルタイムプレビュー")
-        st.caption("※相対パス（../../css/等）のスタイルシートはプレビュー画面上では読み込まれないため、CSSが外れた状態で表示されますが、ダウンロード後のファイルでは正常に適用されます。")
         components.html(st.session_state.generated_html, height=800, scrolling=True)
-        
         st.download_button(
-            label="📄 この内容でHTMLファイルを最終保存（PCへダウンロード）",
+            label="📄 この内容でHTMLファイルを最終保存",
             data=st.session_state.generated_html,
             file_name="output.html",
             mime="text/html"
