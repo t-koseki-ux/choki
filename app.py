@@ -3,12 +3,13 @@ import fitz  # PyMuPDF
 from PIL import Image, ImageDraw, ImageChops
 import io
 import base64
+import zipfile
+import json
 from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
 # --- 余白自動トリミング関数（強化版） ---
 def trim_vertical_white_space(img, threshold=245):
-    """画像の上下の白（またはほぼ白）領域を自動的にトリミングする"""
     rgb_img = img.convert("RGB")
     gray = rgb_img.convert("L")
     bw = gray.point(lambda x: 0 if x >= threshold else 255)
@@ -25,12 +26,13 @@ def reset_session():
     st.session_state.current_page = 0
     st.session_state.img_key = 0
     st.session_state.last_coord = None
-    st.session_state.generated_html = None
+    st.session_state.preview_html = None
+    st.session_state.zip_data = None
     st.session_state.concat_states = {}
     st.session_state.role_states = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.15]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.16]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -74,13 +76,14 @@ if uploaded_file is not None:
         if st.button("現在のページの線をすべてリセット", type="primary"):
             st.session_state.lines_by_page[st.session_state.current_page] = []
             st.session_state.img_key += 1
-            st.session_state.generated_html = None
+            st.session_state.preview_html = None
+            st.session_state.zip_data = None
             st.rerun()
 
         st.markdown("---")
         st.subheader("出力テンプレート設定")
         template_type = st.radio("テンプレートの種類", ["読み物 (通常)", "択一問題 (単一選択)", "スライド式 (ストーリー)"])
-        atom_id = st.text_input("atomid (JSON用)", value="GMT2P3Z1C154")
+        atom_id = st.text_input("atomid (JSON用等)", value="CMV1J1Z12MI4")
         
         concat_margin = st.slider("画像結合時の間の空白サイズ（px）", 0, 100, 20)
         
@@ -138,7 +141,8 @@ if uploaded_file is not None:
                     current_lines.pop(closest_i)
 
             st.session_state.lines_by_page[st.session_state.current_page] = sorted(current_lines, key=lambda x: x["y"])
-            st.session_state.generated_html = None
+            st.session_state.preview_html = None
+            st.session_state.zip_data = None
             st.rerun()
 
     st.markdown("---")
@@ -240,33 +244,62 @@ if uploaded_file is not None:
     
     # --- データ生成とHTML出力 ---
     st.subheader("🚀 HTML生成とプレビュー")
-    if st.button("💻 HTMLを生成・更新する", type="primary"):
+    if st.button("💻 プレビュー更新＆ZIP生成", type="primary"):
         if not all_areas:
             st.error("有効な切り出しエリアがありません。")
         else:
-            def img_to_html_tags(img):
-                width, height = img.size
-                aspect_ratio = f"{width}/{height}"
-                
-                buffered_png = io.BytesIO()
-                img.save(buffered_png, format="PNG")
-                png_uri = f"data:image/png;base64,{base64.b64encode(buffered_png.getvalue()).decode()}"
-                
-                buffered_webp = io.BytesIO()
-                img.save(buffered_webp, format="WEBP")
-                webp_uri = f"data:image/webp;base64,{base64.b64encode(buffered_webp.getvalue()).decode()}"
-                
-                return f'<picture><source srcset="{webp_uri}" type="image/webp"><img src="{png_uri}" style="aspect-ratio: {aspect_ratio};"></picture>'
+            # ZIPファイル作成準備
+            zip_buffer = io.BytesIO()
+            zip_file = zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED)
+            folder_name = atom_id
+            
+            # ① meta/meta.json の作成
+            meta_data = {
+                "resource": {
+                    "contents_id": atom_id,
+                    "pen_tool_status": "2"
+                }
+            }
+            zip_file.writestr(f"{folder_name}/meta/meta.json", json.dumps(meta_data, indent=4))
 
-            def concat_images_vertically(img_list):
-                if not img_list:
-                    return None
-                if len(img_list) == 1:
-                    return img_list[0]
+            # --- ヘルパー関数 ---
+            # プレビュー用 (Base64)
+            def img_to_html_tags_base64(img):
+                w, h = img.size
+                b_png = io.BytesIO()
+                img.save(b_png, format="PNG")
+                png_uri = f"data:image/png;base64,{base64.b64encode(b_png.getvalue()).decode()}"
                 
+                b_webp = io.BytesIO()
+                img.save(b_webp, format="WEBP")
+                webp_uri = f"data:image/webp;base64,{base64.b64encode(b_webp.getvalue()).decode()}"
+                
+                return f'<picture>\n<source srcset="{webp_uri}" type="image/webp"><img src="{png_uri}" style="aspect-ratio: {w}/{h};">\n</picture>'
+
+            # ダウンロード用 (ZIPへ保存 ＆ 相対パス出力)
+            def process_image_for_zip(img, seq_num):
+                base_name = f"{atom_id}{seq_num:03d}"
+                w, h = img.size
+                
+                # PNG保存
+                b_png = io.BytesIO()
+                img.save(b_png, format="PNG")
+                zip_file.writestr(f"{folder_name}/images/{base_name}.png", b_png.getvalue())
+                
+                # WebP保存
+                b_webp = io.BytesIO()
+                img.save(b_webp, format="WEBP")
+                zip_file.writestr(f"{folder_name}/images/{base_name}.png.webp", b_webp.getvalue())
+                
+                # 指定フォーマット通りのHTMLタグを返す
+                return f'<picture>\n<source srcset="./images/{base_name}.png.webp" type="image/webp"><img src="./images/{base_name}.png" style="aspect-ratio: {w}/{h};">\n</picture>'
+
+            # 画像結合処理
+            def concat_images_vertically(img_list):
+                if not img_list: return None
+                if len(img_list) == 1: return img_list[0]
                 max_w = max(img.width for img in img_list)
                 sum_h = sum(img.height for img in img_list) + concat_margin * (len(img_list) - 1)
-                
                 dst = Image.new('RGB', (max_w, sum_h), (255, 255, 255))
                 cy = 0
                 for img in img_list:
@@ -274,144 +307,171 @@ if uploaded_file is not None:
                     cy += img.height + concat_margin
                 return dst
 
+            # ==========================================
+            # HTML構築
+            # ==========================================
+            seq_num = 10
+            html_body_preview = ""
+            html_body_dl = ""
+            
+            style_type = "read-only"
+            ans_metadata = '""'
+
             if template_type == "読み物 (通常)":
-                img_tags_out = ""
                 for group in visual_groups:
                     imgs = [a["img"] for a in group["areas"]]
                     final_img = concat_images_vertically(imgs) if len(imgs) > 1 else imgs[0]
-                    img_tags_out += f'<section class="box-shadow-1dp"><p>{img_to_html_tags(final_img)}</p></section>\n'
-
-                st.session_state.generated_html = f"""<!DOCTYPE html>
-<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
-<link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
-<script type="application/json" id="contentsMetadata">
-{{"atomid": "{atom_id}", "style": "read-only", "answer": "", "version": "1"}}
-</script></head><body><main class="box-margin">
-{img_tags_out}</main>
-<script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
+                    
+                    p_tag = img_to_html_tags_base64(final_img)
+                    d_tag = process_image_for_zip(final_img, seq_num)
+                    
+                    html_body_preview += f'<section class="box-shadow-1dp">\n<p>\n{p_tag}\n</p>\n</section>\n'
+                    html_body_dl += f'<section class="box-shadow-1dp">\n<p>\n{d_tag}\n</p>\n</section>\n'
+                    seq_num += 10
 
             elif template_type == "択一問題 (単一選択)":
+                style_type = "single-choice"
+                ans_metadata = f'["{correct_answer}"]'
+                
                 role_images_lists = {}
                 for area in all_areas:
                     role = st.session_state.role_states.get(f"role_{area['id']}", "除外する")
-                    if role not in role_images_lists:
-                        role_images_lists[role] = []
+                    if role not in role_images_lists: role_images_lists[role] = []
                     role_images_lists[role].append(area['img'])
-                
                 role_images = {r: concat_images_vertically(imgs) for r, imgs in role_images_lists.items()}
-                
-                q_tag = img_to_html_tags(role_images["設問"]) if "設問" in role_images else ""
-                ans_tag = img_to_html_tags(role_images["解答"]) if "解答" in role_images else ""
-                exp_tag = img_to_html_tags(role_images["解説"]) if "解説" in role_images else ""
-                
-                choices_html = ""
-                for val in ["101", "102", "103", "104"]:
-                    if f"選択肢 ({val})" in role_images:
-                        c_tag = img_to_html_tags(role_images[f"選択肢 ({val})"])
-                        choices_html += f'<li><input type="radio" name="radio-01" value="{val}"><label>{c_tag}</label></li>\n'
 
-                st.session_state.generated_html = f"""<!DOCTYPE html>
-<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
-<link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
-<script type="application/json" id="contentsMetadata">
-{{"atomid": "{atom_id}", "style": "single-choice", "answer": ["{correct_answer}"], "version": "1"}}
-</script></head><body><main class="box-margin">
-<section class="box-shadow-1dp" id="boxSubQuestion"><div class="box-collapse-header"><h2>設問</h2></div><div class="box-collapsible">
-<p>{q_tag}</p><ul class="sel-item-border lst-img-radio">{choices_html}</ul></div></section>
+                def get_tags(r_name, cur_seq):
+                    if r_name in role_images:
+                        return img_to_html_tags_base64(role_images[r_name]), process_image_for_zip(role_images[r_name], cur_seq), cur_seq + 10
+                    return "", "", cur_seq
+
+                p_q, d_q, seq_num = get_tags("設問", seq_num)
+                p_ans, d_ans, seq_num = get_tags("解答", seq_num)
+                p_exp, d_exp, seq_num = get_tags("解説", seq_num)
+
+                p_choices = ""
+                d_choices = ""
+                for val in ["101", "102", "103", "104"]:
+                    p_c, d_c, seq_num = get_tags(f"選択肢 ({val})", seq_num)
+                    if p_c:
+                        p_choices += f'<li><input type="radio" name="radio-01" value="{val}"><label>{p_c}</label></li>\n'
+                        d_choices += f'<li><input type="radio" name="radio-01" value="{val}"><label>{d_c}</label></li>\n'
+
+                html_body_preview = f'''<section class="box-shadow-1dp" id="boxSubQuestion"><div class="box-collapse-header"><h2>設問</h2></div><div class="box-collapsible">
+<p>\n{p_q}</p><ul class="sel-item-border lst-img-radio">{p_choices}</ul></div></section>
 <section class="box-btn-answer" id="boxBtnAnswer"><button type="button" class="btn-set-next btn-std box-shadow-2dp" id="btnAnswer">解答する</button></section>
 <section class="box-shadow-1dp no-disp" id="boxAnswer"><div class="box-collapse-header"><h2>解答</h2></div><div class="box-collapsible">
-<p>{ans_tag}</p><h2>解説</h2><p>{exp_tag}</p></div></section>
-</main>
-<script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
+<p>\n{p_ans}</p><h2>解説</h2><p>\n{p_exp}</p></div></section>'''
+                
+                html_body_dl = f'''<section class="box-shadow-1dp" id="boxSubQuestion"><div class="box-collapse-header"><h2>設問</h2></div><div class="box-collapsible">
+<p>\n{d_q}</p><ul class="sel-item-border lst-img-radio">{d_choices}</ul></div></section>
+<section class="box-btn-answer" id="boxBtnAnswer"><button type="button" class="btn-set-next btn-std box-shadow-2dp" id="btnAnswer">解答する</button></section>
+<section class="box-shadow-1dp no-disp" id="boxAnswer"><div class="box-collapse-header"><h2>解答</h2></div><div class="box-collapsible">
+<p>\n{d_ans}</p><h2>解説</h2><p>\n{d_exp}</p></div></section>'''
 
             elif template_type == "スライド式 (ストーリー)":
                 role_images_lists = {}
                 for area in all_areas:
                     role = st.session_state.role_states.get(f"role_{area['id']}", "除外する")
-                    if role not in role_images_lists:
-                        role_images_lists[role] = []
+                    if role not in role_images_lists: role_images_lists[role] = []
                     role_images_lists[role].append(area['img'])
-                
                 role_images = {r: concat_images_vertically(imgs) for r, imgs in role_images_lists.items()}
 
-                q_global = role_images.get("全体の問題文")
-                global_html = ""
-                if q_global:
-                    global_html = f'''      <section class="box-shadow-1dp">
-            <div class="box-collapse-header box-expand">
-                <h2>問題文</h2>
-            </div>
-            <div class="box-collapsible">
-                <p>{img_to_html_tags(q_global)}</p>
-            </div>
-        </section>\n'''
+                def get_tags(r_name, cur_seq):
+                    if r_name in role_images:
+                        return img_to_html_tags_base64(role_images[r_name]), process_image_for_zip(role_images[r_name], cur_seq), cur_seq + 10
+                    return "", "", cur_seq
 
-                slides_html = ""
+                p_g, d_g, seq_num = get_tags("全体の問題文", seq_num)
+                
+                def make_global(tag):
+                    if tag:
+                        return f'''<section class="box-shadow-1dp">
+<div class="box-collapse-header box-expand"><h2>問題文</h2></div>
+<div class="box-collapsible"><p>{tag}</p></div></section>\n'''
+                    return ""
+                
+                p_slides_html = ""
+                d_slides_html = ""
                 max_slide = 0
                 for role in role_images.keys():
                     if role.startswith("スライド"):
                         try:
-                            s_num = int(role.split("スライド")[1].split(":")[0])
-                            max_slide = max(max_slide, s_num)
-                        except:
-                            pass
+                            max_slide = max(max_slide, int(role.split("スライド")[1].split(":")[0]))
+                        except: pass
 
                 for i in range(1, max_slide + 1):
-                    s_q = role_images.get(f"スライド{i}: 設問")
-                    s_a = role_images.get(f"スライド{i}: 解答")
-                    s_e = role_images.get(f"スライド{i}: 解説")
+                    p_sq, d_sq, seq_num = get_tags(f"スライド{i}: 設問", seq_num)
+                    p_sa, d_sa, seq_num = get_tags(f"スライド{i}: 解答", seq_num)
+                    p_se, d_se, seq_num = get_tags(f"スライド{i}: 解説", seq_num)
 
-                    if not s_q and not s_a and not s_e:
-                        continue
+                    if not p_sq and not p_sa and not p_se: continue
 
                     li_class = ' class="lst-current"' if i == 1 else ''
-                    slides_html += f'           <li{li_class}>\n'
+                    
+                    def build_li(q, a, e):
+                        res = f'<li{li_class}>\n'
+                        if q: res += f'<section class="box-shadow-1dp"><div class="box-collapse-header"><h2>設問</h2></div><div class="box-collapsible"><p>{q}</p></div></section>\n'
+                        if a or e:
+                            res += '<section class="box-shadow-1dp"><div class="box-collapse-header"><h2>解答</h2></div><div class="box-collapsible">\n'
+                            if a: res += f'<p>{a}</p>\n'
+                            if e: res += f'<h2>解説</h2>\n<p>{e}</p>\n'
+                            res += '</div></section>\n'
+                        res += '</li>\n'
+                        return res
 
-                    if s_q:
-                        slides_html += f'''             <section class="box-shadow-1dp">
-                    <div class="box-collapse-header">
-                        <h2>設問</h2>
-                    </div>
-                    <div class="box-collapsible">
-                        <p>{img_to_html_tags(s_q)}</p>
-                    </div>
-                </section>\n'''
-                    if s_a or s_e:
-                        slides_html += f'''             <section class="box-shadow-1dp">
-                    <div class="box-collapse-header">
-                        <h2>解答</h2>
-                    </div>
-                    <div class="box-collapsible">\n'''
-                        if s_a:
-                            slides_html += f'                       <p>{img_to_html_tags(s_a)}</p>\n'
-                        if s_e:
-                            slides_html += f'                       <h2>解説</h2>\n                     <p>{img_to_html_tags(s_e)}</p>\n'
-                        slides_html += '                    </div>\n                </section>\n'
-                    slides_html += '            </li>\n'
+                    p_slides_html += build_li(p_sq, p_sa, p_se)
+                    d_slides_html += build_li(d_sq, d_sa, d_se)
 
-                btn_controls = '''      <section class="box-btn-show-picture">
-            <button type="button" class="box-shadow-2dp btn-show-picture-prev">◀ 前へ</button>
-            <span class="txt-picture-current"></span>
-            /
-            <span class="txt-picture-length"></span>
-            <button type="button" class="box-shadow-2dp btn-show-picture-next">次へ ▶</button>
-        </section>\n'''
+                btn_controls = '''<section class="box-btn-show-picture">
+<button type="button" class="box-shadow-2dp btn-show-picture-prev">◀ 前へ</button>
+<span class="txt-picture-current"></span> / <span class="txt-picture-length"></span>
+<button type="button" class="box-shadow-2dp btn-show-picture-next">次へ ▶</button>
+</section>\n'''
 
-                st.session_state.generated_html = f"""<!DOCTYPE html>
-<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Ｚ会学習アプリ</title>
-<link rel="stylesheet" href="../../css/reset.min.css"><link rel="stylesheet" href="../../css/base.min.css"><link rel="stylesheet" href="../../css/custom_main.min.css" />
+                html_body_preview = f"{make_global(p_g)}{btn_controls}<ul class=\"lst-pic-story\" id=\"lstPicStory\">\n{p_slides_html}</ul>\n{btn_controls}"
+                html_body_dl = f"{make_global(d_g)}{btn_controls}<ul class=\"lst-pic-story\" id=\"lstPicStory\">\n{d_slides_html}</ul>\n{btn_controls}"
+
+            # --- 全体HTMLテンプレートの組み立て ---
+            def build_full_html(body_content):
+                return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,minimum-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>Ｚ会学習アプリ</title>
+<link rel="stylesheet" href="../../css/reset.min.css">
+<link rel="stylesheet" href="../../css/base.min.css">
+<link rel="stylesheet" href="../../css/custom_main.min.css" />
 <script type="application/json" id="contentsMetadata">
-{{"atomid": "{atom_id}", "style": "read-only", "answer": "", "version": "1"}}
-</script></head><body>  <main class="box-margin">
-{global_html}{btn_controls}     <ul class="lst-pic-story" id="lstPicStory">
-{slides_html}       </ul>
-{btn_controls}  </main>
-<script src="../../contentsInterface/ContentsInterface.js"></script><script src="../../js/lib/jquery.min.js"></script><script src="../../js/lib/jquery-ui.min.js"></script><script src="../../js/lib/jquery.ui.touch-punch.min.js"></script><script src="../../js/custom.min.js"></script><script src="../../js/answer_main.min.js"></script><script src="../../js/zkai_webfont.js"></script></body></html>"""
+{{
+"atomid": "{atom_id}",
+"style": "{style_type}",
+"answer": {ans_metadata},
+"version": "1"
+}}
+</script>
+</head>
+<body>
+<main class="box-margin">
+{body_content}</main>
+<script src="../../contentsInterface/ContentsInterface.js"></script>
+<script src="../../js/lib/jquery.min.js"></script>
+<script src="../../js/lib/jquery-ui.min.js"></script>
+<script src="../../js/lib/jquery.ui.touch-punch.min.js"></script>
+<script src="../../js/custom.min.js"></script>
+<script src="../../js/answer_main.min.js"></script>
+<script src="../../js/zkai_webfont.js"></script>
+</body>
+</html>"""
 
-    if st.session_state.generated_html is not None:
-        st.markdown("---")
-        
-        preview_fallback_script = """
+            dl_full_html = build_full_html(html_body_dl)
+            zip_file.writestr(f"{folder_name}/index.html", dl_full_html.encode("utf-8"))
+            zip_file.close()
+            st.session_state.zip_data = zip_buffer.getvalue()
+
+            preview_fallback = """
 <style>
 #lstPicStory { list-style: none; padding: 0; margin: 0; }
 #lstPicStory > li { display: none; }
@@ -468,26 +528,29 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 </body></html>"""
-        
-        preview_html = st.session_state.generated_html.replace('</body></html>', preview_fallback_script)
-        components.html(preview_html, height=800, scrolling=True)
+            st.session_state.preview_html = build_full_html(html_body_preview).replace('</body>\n</html>', preview_fallback)
+
+    # --- プレビュー表示とダウンロードボタン ---
+    if st.session_state.preview_html is not None and st.session_state.zip_data is not None:
+        st.markdown("---")
+        components.html(st.session_state.preview_html, height=800, scrolling=True)
         
         col1, col2 = st.columns(2)
         with col1:
             st.download_button(
-                label="📄 プレビュー中のHTMLファイルをダウンロード",
-                data=st.session_state.generated_html,
-                file_name="output.html",
-                mime="text/html"
+                label="📦 ZIPファイル一括ダウンロード (本番仕様)",
+                data=st.session_state.zip_data,
+                file_name=f"{atom_id}.zip",
+                mime="application/zip"
             )
 
-    # 🌟 編集済みPDFのダウンロード機能
+    # --- 編集済みPDFのダウンロード機能 ---
     st.markdown("---")
     st.subheader("📥 編集済みPDFのダウンロード")
     st.write("画面上で引いた赤線や太赤線の領域を、元のPDFに直接書き込んで保存します。")
     
     out_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
-    scale = 72 / 150  # DPI=150のピクセル座標をPDF本来のポイント(72ppi)にスケール変換
+    scale = 72 / 150  
     
     for p_num, lines in st.session_state.lines_by_page.items():
         if lines:
