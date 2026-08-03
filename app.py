@@ -32,7 +32,7 @@ def reset_session():
     st.session_state.role_states = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.16]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.17]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -253,7 +253,7 @@ if uploaded_file is not None:
             zip_file = zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED)
             folder_name = atom_id
             
-            # ① meta/meta.json の作成
+            # ① meta/meta.json の作成（テンプレート種類にかかわらず固定の短いJSON）
             meta_data = {
                 "resource": {
                     "contents_id": atom_id,
@@ -370,6 +370,9 @@ if uploaded_file is not None:
 <p>\n{d_ans}</p><h2>解説</h2><p>\n{d_exp}</p></div></section>'''
 
             elif template_type == "スライド式 (ストーリー)":
+                style_type = "read-only"
+                ans_metadata = '""'
+                
                 role_images_lists = {}
                 for area in all_areas:
                     role = st.session_state.role_states.get(f"role_{area['id']}", "除外する")
@@ -377,18 +380,19 @@ if uploaded_file is not None:
                     role_images_lists[role].append(area['img'])
                 role_images = {r: concat_images_vertically(imgs) for r, imgs in role_images_lists.items()}
 
-                def get_tags(r_name, cur_seq):
+                # 指定されたルールで固定番号ナンバリングを行うための関数
+                def get_tags_fixed(r_name, specific_seq):
                     if r_name in role_images:
-                        return img_to_html_tags_base64(role_images[r_name]), process_image_for_zip(role_images[r_name], cur_seq), cur_seq + 10
-                    return "", "", cur_seq
+                        return img_to_html_tags_base64(role_images[r_name]), process_image_for_zip(role_images[r_name], specific_seq)
+                    return "", ""
 
-                p_g, d_g, seq_num = get_tags("全体の問題文", seq_num)
+                p_g, d_g = get_tags_fixed("全体の問題文", 41)
                 
                 def make_global(tag):
                     if tag:
                         return f'''<section class="box-shadow-1dp">
 <div class="box-collapse-header box-expand"><h2>問題文</h2></div>
-<div class="box-collapsible"><p>{tag}</p></div></section>\n'''
+<div class="box-collapsible"><p>\n{tag}</p></div></section>\n'''
                     return ""
                 
                 p_slides_html = ""
@@ -401,9 +405,10 @@ if uploaded_file is not None:
                         except: pass
 
                 for i in range(1, max_slide + 1):
-                    p_sq, d_sq, seq_num = get_tags(f"スライド{i}: 設問", seq_num)
-                    p_sa, d_sa, seq_num = get_tags(f"スライド{i}: 解答", seq_num)
-                    p_se, d_se, seq_num = get_tags(f"スライド{i}: 解説", seq_num)
+                    # 各スライド用の画像を規定の数値で出力 (50+i, 70+i, 80+i)
+                    p_sq, d_sq = get_tags_fixed(f"スライド{i}: 設問", 50 + i)
+                    p_sa, d_sa = get_tags_fixed(f"スライド{i}: 解答", 70 + i)
+                    p_se, d_se = get_tags_fixed(f"スライド{i}: 解説", 80 + i)
 
                     if not p_sq and not p_sa and not p_se: continue
 
@@ -411,11 +416,11 @@ if uploaded_file is not None:
                     
                     def build_li(q, a, e):
                         res = f'<li{li_class}>\n'
-                        if q: res += f'<section class="box-shadow-1dp"><div class="box-collapse-header"><h2>設問</h2></div><div class="box-collapsible"><p>{q}</p></div></section>\n'
+                        if q: res += f'<section class="box-shadow-1dp"><div class="box-collapse-header"><h2>設問</h2></div><div class="box-collapsible"><p>\n{q}</p></div></section>\n'
                         if a or e:
                             res += '<section class="box-shadow-1dp"><div class="box-collapse-header"><h2>解答</h2></div><div class="box-collapsible">\n'
-                            if a: res += f'<p>{a}</p>\n'
-                            if e: res += f'<h2>解説</h2>\n<p>{e}</p>\n'
+                            if a: res += f'<p>\n{a}</p>\n'
+                            if e: res += f'<h2>解説</h2>\n<p>\n{e}</p>\n'
                             res += '</div></section>\n'
                         res += '</li>\n'
                         return res
