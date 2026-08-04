@@ -37,7 +37,7 @@ def reset_session():
     st.session_state.page_images = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.21]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.22]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -89,7 +89,7 @@ if uploaded_file is not None:
         st.markdown("---")
         st.subheader("出力設定")
         output_dpi = st.slider("出力画像の画質 (DPI)", min_value=150, max_value=600, value=300, step=50)
-        st.caption("※数値を上げると文字がくっきりしますが、ファイルサイズが重くなります。")
+        st.caption("※最終的なZIP書き出し時のみ、この高画質設定が適用されます。")
         
         st.markdown("---")
         st.subheader("出力テンプレート設定")
@@ -184,58 +184,55 @@ if uploaded_file is not None:
             
         st.markdown("---")
         
-        # 150dpi基準からのスケーリング係数
-        scale_factor = output_dpi / 150.0
-        
-        all_areas = []
-        with st.spinner(f"高画質（{output_dpi} dpi）で画像を切り出し中です..."):
-            for p_num in sorted(st.session_state.lines_by_page.keys()):
-                p_lines = st.session_state.lines_by_page[p_num]
-                if len(p_lines) < 2:
-                    continue
-                    
+        # 🌟 劇的軽量化：UI表示用には「キャッシュ済みの150dpi画像」を使い回す
+        all_areas_ui = []
+        for p_num in sorted(st.session_state.lines_by_page.keys()):
+            p_lines = st.session_state.lines_by_page[p_num]
+            if len(p_lines) < 2:
+                continue
+            
+            # 高画質レンダリングをせず、既に読み込み済みの150dpi画像を再利用（一瞬で終わる）
+            if p_num not in st.session_state.page_images:
                 p = doc.load_page(p_num)
-                p_pix = p.get_pixmap(dpi=output_dpi) 
-                p_orig = Image.open(io.BytesIO(p_pix.tobytes("png")))
+                st.session_state.page_images[p_num] = Image.open(io.BytesIO(p.get_pixmap(dpi=150).tobytes("png")))
+            p_orig_ui = st.session_state.page_images[p_num]
+            
+            for i in range(len(p_lines) - 1):
+                line_a = p_lines[i]
+                line_b = p_lines[i+1]
+                y_start_150 = line_a["y"] + (line_a["thickness"] // 2 if line_a["type"] != "通常線（境界）" else 0)
+                y_end_150 = line_b["y"] - (line_b["thickness"] // 2 if line_b["type"] != "通常線（境界）" else 0)
                 
-                for i in range(len(p_lines) - 1):
-                    line_a = p_lines[i]
-                    line_b = p_lines[i+1]
-                    y_start_150 = line_a["y"] + (line_a["thickness"] // 2 if line_a["type"] != "通常線（境界）" else 0)
-                    y_end_150 = line_b["y"] - (line_b["thickness"] // 2 if line_b["type"] != "通常線（境界）" else 0)
+                if y_start_150 < y_end_150:
+                    crop_img_ui = p_orig_ui.crop((0, y_start_150, p_orig_ui.width, y_end_150))
+                    crop_img_ui = trim_vertical_white_space(crop_img_ui)
                     
-                    if y_start_150 < y_end_150:
-                        y_start = int(y_start_150 * scale_factor)
-                        y_end = int(y_end_150 * scale_factor)
-                        
-                        crop_img = p_orig.crop((0, y_start, p_orig.width, y_end))
-                        crop_img = trim_vertical_white_space(crop_img)
-                        
-                        all_areas.append({
-                            "id": f"img_{p_num}_{int(y_start_150)}",
-                            "p_num": p_num,
-                            "y_start": y_start_150,
-                            "img": crop_img
-                        })
+                    all_areas_ui.append({
+                        "id": f"img_{p_num}_{int(y_start_150)}",
+                        "p_num": p_num,
+                        "y_start_150": y_start_150,
+                        "y_end_150": y_end_150,
+                        "img_ui": crop_img_ui  # UIプレビュー用の軽い画像
+                    })
 
-        if all_areas:
+        if all_areas_ui:
             st.subheader("🧩 切り出しエリアの設定")
             
             if template_type == "読み物 (通常)":
                 st.write("同じ外枠に囲まれている画像同士が縦に連結されます。")
                 visual_groups = []
-                current_g = [all_areas[0]]
+                current_g = [all_areas_ui[0]]
                 current_idxs = [0]
                 
-                for idx in range(len(all_areas) - 1):
-                    area = all_areas[idx]
+                for idx in range(len(all_areas_ui) - 1):
+                    area = all_areas_ui[idx]
                     state_key = f"link_{area['id']}"
                     if st.session_state.concat_states.get(state_key, False):
-                        current_g.append(all_areas[idx+1])
+                        current_g.append(all_areas_ui[idx+1])
                         current_idxs.append(idx+1)
                     else:
                         visual_groups.append({"areas": current_g, "idxs": current_idxs})
-                        current_g = [all_areas[idx+1]]
+                        current_g = [all_areas_ui[idx+1]]
                         current_idxs = [idx+1]
                 visual_groups.append({"areas": current_g, "idxs": current_idxs})
                 
@@ -245,7 +242,7 @@ if uploaded_file is not None:
                     with st.container(border=True):
                         for m_idx, area in enumerate(areas):
                             st.caption(f"画像 {idxs[m_idx]+1}")
-                            st.image(area['img'], width=350)
+                            st.image(area['img_ui'], width=350)
                             if m_idx < len(areas) - 1:
                                 if st.button("🔓 連結解除", key=f"btn_unlink_{idxs[m_idx]}"):
                                     st.session_state.concat_states[f"link_{area['id']}"] = False
@@ -264,11 +261,11 @@ if uploaded_file is not None:
                     for i in range(1, 11):
                         roles_options.extend([f"スライド{i}: 設問", f"スライド{i}: 解答", f"スライド{i}: 解説"])
                 
-                for idx, area in enumerate(all_areas):
+                for idx, area in enumerate(all_areas_ui):
                     with st.container(border=True):
                         col1, col2 = st.columns([1, 2])
                         with col1:
-                            st.image(area['img'], width=250)
+                            st.image(area['img_ui'], width=250)
                         with col2:
                             state_key = f"role_{area['id']}"
                             if state_key not in st.session_state.role_states:
@@ -287,9 +284,33 @@ if uploaded_file is not None:
         # --- データ生成とHTML出力 ---
         st.subheader("🚀 HTML生成とプレビュー")
         if st.button("💻 プレビュー更新＆ZIP生成", type="primary"):
-            if not all_areas:
+            if not all_areas_ui:
                 st.error("有効な切り出しエリアがありません。")
             else:
+                # 🌟 ボタンを押したここだけで初めて「指定の高画質DPI」を使った重いレンダリングを行う
+                scale_factor = output_dpi / 150.0
+                all_areas_highres = {}
+                
+                with st.spinner(f"高画質（{output_dpi} dpi）で最終画像を生成し、ZIPを作成中です..."):
+                    for p_num in sorted(st.session_state.lines_by_page.keys()):
+                        p_lines = st.session_state.lines_by_page[p_num]
+                        if len(p_lines) < 2:
+                            continue
+                        
+                        p = doc.load_page(p_num)
+                        p_pix = p.get_pixmap(dpi=output_dpi) 
+                        p_orig_high = Image.open(io.BytesIO(p_pix.tobytes("png")))
+                        
+                        for area in [a for a in all_areas_ui if a['p_num'] == p_num]:
+                            y_start = int(area["y_start_150"] * scale_factor)
+                            y_end = int(area["y_end_150"] * scale_factor)
+                            
+                            crop_img_high = p_orig_high.crop((0, y_start, p_orig_high.width, y_end))
+                            crop_img_high = trim_vertical_white_space(crop_img_high)
+                            
+                            all_areas_highres[area["id"]] = crop_img_high
+
+                # 以下のHTML/ZIP生成処理はすべて all_areas_highres を使って実行
                 zip_buffer = io.BytesIO()
                 zip_file = zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED)
                 folder_name = atom_id
@@ -350,7 +371,8 @@ if uploaded_file is not None:
 
                 if template_type == "読み物 (通常)":
                     for group in visual_groups:
-                        imgs = [a["img"] for a in group["areas"]]
+                        # 高画質版の画像を取り出す
+                        imgs = [all_areas_highres[a["id"]] for a in group["areas"]]
                         final_img = concat_images_vertically(imgs) if len(imgs) > 1 else imgs[0]
                         
                         p_tag = img_to_html_tags_base64(final_img)
@@ -365,10 +387,10 @@ if uploaded_file is not None:
                     ans_metadata = f'["{correct_answer}"]'
                     
                     role_images_lists = {}
-                    for area in all_areas:
+                    for area in all_areas_ui:
                         role = st.session_state.role_states.get(f"role_{area['id']}", "除外する")
                         if role not in role_images_lists: role_images_lists[role] = []
-                        role_images_lists[role].append(area['img'])
+                        role_images_lists[role].append(all_areas_highres[area['id']])
                     role_images = {r: concat_images_vertically(imgs) for r, imgs in role_images_lists.items()}
 
                     def get_tags(r_name, cur_seq):
@@ -405,10 +427,10 @@ if uploaded_file is not None:
                     ans_metadata = '""'
                     
                     role_images_lists = {}
-                    for area in all_areas:
+                    for area in all_areas_ui:
                         role = st.session_state.role_states.get(f"role_{area['id']}", "除外する")
                         if role not in role_images_lists: role_images_lists[role] = []
-                        role_images_lists[role].append(area['img'])
+                        role_images_lists[role].append(all_areas_highres[area['id']])
                     role_images = {r: concat_images_vertically(imgs) for r, imgs in role_images_lists.items()}
 
                     def get_tags_fixed(r_name, specific_seq):
@@ -504,7 +526,6 @@ if uploaded_file is not None:
                 zip_file.close()
                 st.session_state.zip_data = zip_buffer.getvalue()
 
-                # 🌟 今回の改修点：プレビュー枠内で画像がはみ出さないように、imgタグとpictureタグに max-width を設定するCSSを追加
                 preview_fallback = """
 <style>
 #lstPicStory { list-style: none; padding: 0; margin: 0; }
