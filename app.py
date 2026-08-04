@@ -20,6 +20,9 @@ def trim_vertical_white_space(img, threshold=245):
 
 if "file_name" not in st.session_state:
     st.session_state.file_name = None
+# 🌟 PDF画像のキャッシュ用ステートを追加
+if "page_images" not in st.session_state:
+    st.session_state.page_images = {}
 
 def reset_session():
     st.session_state.lines_by_page = {}
@@ -30,10 +33,11 @@ def reset_session():
     st.session_state.zip_data = None
     st.session_state.concat_states = {}
     st.session_state.role_states = {}
-    st.session_state.app_phase = "drawing" # 🌟 フェーズ管理（drawing / setting）
+    st.session_state.app_phase = "drawing" 
+    st.session_state.page_images = {} # 🌟 キャッシュもリセット
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.18]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.19]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -83,7 +87,6 @@ if uploaded_file is not None:
             st.rerun()
 
         st.markdown("---")
-        # 🌟 出力画像の高画質化（DPI）設定
         st.subheader("出力設定")
         output_dpi = st.slider("出力画像の画質 (DPI)", min_value=150, max_value=600, value=300, step=50)
         st.caption("※数値を上げると文字がくっきりしますが、ファイルサイズが重くなります。")
@@ -104,11 +107,15 @@ if uploaded_file is not None:
         st.session_state.lines_by_page[st.session_state.current_page] = []
     current_lines = st.session_state.lines_by_page[st.session_state.current_page]
 
-    # プレビュー操作用の画像は常に軽量な150dpiで生成
-    page = doc.load_page(st.session_state.current_page)
-    pix = page.get_pixmap(dpi=150)
-    img_original = Image.open(io.BytesIO(pix.tobytes("png")))
-    img_display = img_original.convert("RGBA")
+    # 🌟 【劇的軽量化】表示用ベース画像のキャッシュ（毎回PDFから生成しない）
+    if st.session_state.current_page not in st.session_state.page_images:
+        page = doc.load_page(st.session_state.current_page)
+        pix = page.get_pixmap(dpi=150)
+        st.session_state.page_images[st.session_state.current_page] = Image.open(io.BytesIO(pix.tobytes("png")))
+    
+    # キャッシュした画像をコピーして使う
+    img_original = st.session_state.page_images[st.session_state.current_page]
+    img_display = img_original.copy().convert("RGBA")
     
     overlay = Image.new("RGBA", img_display.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
@@ -153,13 +160,13 @@ if uploaded_file is not None:
             st.session_state.lines_by_page[st.session_state.current_page] = sorted(current_lines, key=lambda x: x["y"])
             st.session_state.preview_html = None
             st.session_state.zip_data = None
-            st.session_state.app_phase = "drawing" # 線が変更されたらdrawingフェーズに戻る
+            st.session_state.app_phase = "drawing"
             st.rerun()
 
     st.markdown("---")
 
     # ==========================================
-    # 🌟 フェーズごとのフロー制御（ここから分離）
+    # フェーズごとのフロー制御
     # ==========================================
     
     # ✒️ 線引きフェーズ
@@ -184,7 +191,6 @@ if uploaded_file is not None:
         # 150dpiから高画質dpiへの変換係数
         scale_factor = output_dpi / 150.0
         
-        # --- 切り出しエリア事前計算（高画質化） ---
         all_areas = []
         with st.spinner(f"高画質（{output_dpi} dpi）で画像を切り出し中です..."):
             for p_num in sorted(st.session_state.lines_by_page.keys()):
@@ -193,19 +199,16 @@ if uploaded_file is not None:
                     continue
                     
                 p = doc.load_page(p_num)
-                # ★ここで指定されたDPIで高画質レンダリングする
                 p_pix = p.get_pixmap(dpi=output_dpi) 
                 p_orig = Image.open(io.BytesIO(p_pix.tobytes("png")))
                 
                 for i in range(len(p_lines) - 1):
                     line_a = p_lines[i]
                     line_b = p_lines[i+1]
-                    # 元の座標（150dpiベース）
                     y_start_150 = line_a["y"] + (line_a["thickness"] // 2 if line_a["type"] != "通常線（境界）" else 0)
                     y_end_150 = line_b["y"] - (line_b["thickness"] // 2 if line_b["type"] != "通常線（境界）" else 0)
                     
                     if y_start_150 < y_end_150:
-                        # 座標を高画質DPI用にスケーリングして切り出し
                         y_start = int(y_start_150 * scale_factor)
                         y_end = int(y_end_150 * scale_factor)
                         
@@ -213,13 +216,12 @@ if uploaded_file is not None:
                         crop_img = trim_vertical_white_space(crop_img)
                         
                         all_areas.append({
-                            "id": f"img_{p_num}_{int(y_start_150)}", # IDのキーは150dpiのまま維持
+                            "id": f"img_{p_num}_{int(y_start_150)}",
                             "p_num": p_num,
                             "y_start": y_start_150,
                             "img": crop_img
                         })
 
-        # --- UIの出し分け ---
         if all_areas:
             st.subheader("🧩 切り出しエリアの設定")
             
@@ -333,7 +335,6 @@ if uploaded_file is not None:
                 def concat_images_vertically(img_list):
                     if not img_list: return None
                     if len(img_list) == 1: return img_list[0]
-                    # ★結合時のマージンもDPIに合わせてスケーリング
                     actual_margin = int(concat_margin * scale_factor)
                     max_w = max(img.width for img in img_list)
                     sum_h = sum(img.height for img in img_list) + actual_margin * (len(img_list) - 1)
