@@ -20,7 +20,7 @@ def trim_vertical_white_space(img, threshold=245):
 
 if "file_name" not in st.session_state:
     st.session_state.file_name = None
-# 🌟 PDF画像のキャッシュ用ステートを追加
+# PDF画像のキャッシュ用ステート
 if "page_images" not in st.session_state:
     st.session_state.page_images = {}
 
@@ -34,10 +34,10 @@ def reset_session():
     st.session_state.concat_states = {}
     st.session_state.role_states = {}
     st.session_state.app_phase = "drawing" 
-    st.session_state.page_images = {} # 🌟 キャッシュもリセット
+    st.session_state.page_images = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.19]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.20]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -87,9 +87,10 @@ if uploaded_file is not None:
             st.rerun()
 
         st.markdown("---")
-        st.subheader("出力設定")
-        output_dpi = st.slider("出力画像の画質 (DPI)", min_value=150, max_value=600, value=300, step=50)
-        st.caption("※数値を上げると文字がくっきりしますが、ファイルサイズが重くなります。")
+        # 🌟 スーパーサンプリング用の内部レンダリングDPI設定
+        st.subheader("出力画像の画質設定")
+        output_dpi = st.slider("内部レンダリング画質 (DPI)", min_value=150, max_value=600, value=300, step=50)
+        st.caption("※値を上げると、画像の寸法（サイズ）はそのままに、文字のフチがより滑らかで高画質になります。（推奨: 300〜400）")
         
         st.markdown("---")
         st.subheader("出力テンプレート設定")
@@ -107,13 +108,12 @@ if uploaded_file is not None:
         st.session_state.lines_by_page[st.session_state.current_page] = []
     current_lines = st.session_state.lines_by_page[st.session_state.current_page]
 
-    # 🌟 【劇的軽量化】表示用ベース画像のキャッシュ（毎回PDFから生成しない）
+    # 表示用ベース画像のキャッシュ（150dpi）
     if st.session_state.current_page not in st.session_state.page_images:
         page = doc.load_page(st.session_state.current_page)
         pix = page.get_pixmap(dpi=150)
         st.session_state.page_images[st.session_state.current_page] = Image.open(io.BytesIO(pix.tobytes("png")))
     
-    # キャッシュした画像をコピーして使う
     img_original = st.session_state.page_images[st.session_state.current_page]
     img_display = img_original.copy().convert("RGBA")
     
@@ -188,16 +188,17 @@ if uploaded_file is not None:
             
         st.markdown("---")
         
-        # 150dpiから高画質dpiへの変換係数
+        # 150dpi基準からのスケーリング係数
         scale_factor = output_dpi / 150.0
         
         all_areas = []
-        with st.spinner(f"高画質（{output_dpi} dpi）で画像を切り出し中です..."):
+        with st.spinner(f"スーパーサンプリング（{output_dpi} dpi）で高画質画像を生成中です..."):
             for p_num in sorted(st.session_state.lines_by_page.keys()):
                 p_lines = st.session_state.lines_by_page[p_num]
                 if len(p_lines) < 2:
                     continue
                     
+                # 🌟 指定された高DPIでレンダリング（巨大な画像ができる）
                 p = doc.load_page(p_num)
                 p_pix = p.get_pixmap(dpi=output_dpi) 
                 p_orig = Image.open(io.BytesIO(p_pix.tobytes("png")))
@@ -209,11 +210,18 @@ if uploaded_file is not None:
                     y_end_150 = line_b["y"] - (line_b["thickness"] // 2 if line_b["type"] != "通常線（境界）" else 0)
                     
                     if y_start_150 < y_end_150:
+                        # スケールに合わせて座標を計算し切り出し
                         y_start = int(y_start_150 * scale_factor)
                         y_end = int(y_end_150 * scale_factor)
                         
                         crop_img = p_orig.crop((0, y_start, p_orig.width, y_end))
                         crop_img = trim_vertical_white_space(crop_img)
+                        
+                        # 🌟 巨大な画像を「元のサイズ（150dpi相当）」に高品質縮小（Lanczos）
+                        target_width = int(crop_img.width / scale_factor)
+                        target_height = int(crop_img.height / scale_factor)
+                        # Lanczosフィルターでリサイズすることでジャギが消え、劇的に美しくなります
+                        crop_img = crop_img.resize((target_width, target_height), Image.Resampling.LANCZOS)
                         
                         all_areas.append({
                             "id": f"img_{p_num}_{int(y_start_150)}",
@@ -335,14 +343,14 @@ if uploaded_file is not None:
                 def concat_images_vertically(img_list):
                     if not img_list: return None
                     if len(img_list) == 1: return img_list[0]
-                    actual_margin = int(concat_margin * scale_factor)
+                    # 🌟 結合マージンは元のサイズのまま使用可能に
                     max_w = max(img.width for img in img_list)
-                    sum_h = sum(img.height for img in img_list) + actual_margin * (len(img_list) - 1)
+                    sum_h = sum(img.height for img in img_list) + concat_margin * (len(img_list) - 1)
                     dst = Image.new('RGB', (max_w, sum_h), (255, 255, 255))
                     cy = 0
                     for img in img_list:
                         dst.paste(img, (0, cy))
-                        cy += img.height + actual_margin
+                        cy += img.height + concat_margin
                     return dst
 
                 seq_num = 10
