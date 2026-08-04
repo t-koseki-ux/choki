@@ -37,7 +37,7 @@ def reset_session():
     st.session_state.page_images = {}
 
 st.set_page_config(layout="wide")
-st.title("[PDF自動切り出し＆HTML生成アプリ.20]")
+st.title("[PDF自動切り出し＆HTML生成アプリ.21]")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type=["pdf"])
 
@@ -87,10 +87,9 @@ if uploaded_file is not None:
             st.rerun()
 
         st.markdown("---")
-        # 🌟 スーパーサンプリング用の内部レンダリングDPI設定
-        st.subheader("出力画像の画質設定")
-        output_dpi = st.slider("内部レンダリング画質 (DPI)", min_value=150, max_value=600, value=300, step=50)
-        st.caption("※値を上げると、画像の寸法（サイズ）はそのままに、文字のフチがより滑らかで高画質になります。（推奨: 300〜400）")
+        st.subheader("出力設定")
+        output_dpi = st.slider("出力画像の画質 (DPI)", min_value=150, max_value=600, value=300, step=50)
+        st.caption("※数値を上げると文字がくっきりしますが、ファイルサイズが重くなります。")
         
         st.markdown("---")
         st.subheader("出力テンプレート設定")
@@ -136,7 +135,6 @@ if uploaded_file is not None:
         key=f"pdf_img_p{st.session_state.current_page}_k{st.session_state.img_key}"
     )
     
-    # クリック時の処理
     if value is not None:
         coord_str = f"{value['x']}_{value['y']}_{st.session_state.img_key}"
         if st.session_state.last_coord != coord_str:
@@ -169,7 +167,6 @@ if uploaded_file is not None:
     # フェーズごとのフロー制御
     # ==========================================
     
-    # ✒️ 線引きフェーズ
     if st.session_state.app_phase == "drawing":
         st.info("👆 上の画像をクリックして赤線を引いてください。線を引き終えたら、下のボタンを押してください。")
         if st.button("✂️ 線の指定を完了し、切り出しエリア設定に進む", type="primary", use_container_width=True):
@@ -180,7 +177,6 @@ if uploaded_file is not None:
             else:
                 st.error("有効な切り出しエリアがありません。少なくとも1つのページで2本以上の線を引いてください。")
 
-    # 🧩 設定・出力フェーズ
     elif st.session_state.app_phase == "setting":
         if st.button("✏️ 線の指定（引き直し）に戻る"):
             st.session_state.app_phase = "drawing"
@@ -192,13 +188,12 @@ if uploaded_file is not None:
         scale_factor = output_dpi / 150.0
         
         all_areas = []
-        with st.spinner(f"スーパーサンプリング（{output_dpi} dpi）で高画質画像を生成中です..."):
+        with st.spinner(f"高画質（{output_dpi} dpi）で画像を切り出し中です..."):
             for p_num in sorted(st.session_state.lines_by_page.keys()):
                 p_lines = st.session_state.lines_by_page[p_num]
                 if len(p_lines) < 2:
                     continue
                     
-                # 🌟 指定された高DPIでレンダリング（巨大な画像ができる）
                 p = doc.load_page(p_num)
                 p_pix = p.get_pixmap(dpi=output_dpi) 
                 p_orig = Image.open(io.BytesIO(p_pix.tobytes("png")))
@@ -210,18 +205,11 @@ if uploaded_file is not None:
                     y_end_150 = line_b["y"] - (line_b["thickness"] // 2 if line_b["type"] != "通常線（境界）" else 0)
                     
                     if y_start_150 < y_end_150:
-                        # スケールに合わせて座標を計算し切り出し
                         y_start = int(y_start_150 * scale_factor)
                         y_end = int(y_end_150 * scale_factor)
                         
                         crop_img = p_orig.crop((0, y_start, p_orig.width, y_end))
                         crop_img = trim_vertical_white_space(crop_img)
-                        
-                        # 🌟 巨大な画像を「元のサイズ（150dpi相当）」に高品質縮小（Lanczos）
-                        target_width = int(crop_img.width / scale_factor)
-                        target_height = int(crop_img.height / scale_factor)
-                        # Lanczosフィルターでリサイズすることでジャギが消え、劇的に美しくなります
-                        crop_img = crop_img.resize((target_width, target_height), Image.Resampling.LANCZOS)
                         
                         all_areas.append({
                             "id": f"img_{p_num}_{int(y_start_150)}",
@@ -343,14 +331,14 @@ if uploaded_file is not None:
                 def concat_images_vertically(img_list):
                     if not img_list: return None
                     if len(img_list) == 1: return img_list[0]
-                    # 🌟 結合マージンは元のサイズのまま使用可能に
+                    actual_margin = int(concat_margin * scale_factor)
                     max_w = max(img.width for img in img_list)
-                    sum_h = sum(img.height for img in img_list) + concat_margin * (len(img_list) - 1)
+                    sum_h = sum(img.height for img in img_list) + actual_margin * (len(img_list) - 1)
                     dst = Image.new('RGB', (max_w, sum_h), (255, 255, 255))
                     cy = 0
                     for img in img_list:
                         dst.paste(img, (0, cy))
-                        cy += img.height + concat_margin
+                        cy += img.height + actual_margin
                     return dst
 
                 seq_num = 10
@@ -516,6 +504,7 @@ if uploaded_file is not None:
                 zip_file.close()
                 st.session_state.zip_data = zip_buffer.getvalue()
 
+                # 🌟 今回の改修点：プレビュー枠内で画像がはみ出さないように、imgタグとpictureタグに max-width を設定するCSSを追加
                 preview_fallback = """
 <style>
 #lstPicStory { list-style: none; padding: 0; margin: 0; }
@@ -525,6 +514,8 @@ if uploaded_file is not None:
 .btn-show-picture-prev, .btn-show-picture-next { cursor: pointer; padding: 8px 16px; border: 1px solid #ccc; background: #fff; border-radius: 4px; }
 .box-collapse-header { cursor: pointer; background: #f5f5f5; padding: 10px; border-bottom: 1px solid #ddd; margin-top: 10px; }
 .no-disp { display: none !important; }
+img { max-width: 100%; height: auto; display: block; }
+picture { max-width: 100%; display: block; }
 </style>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
