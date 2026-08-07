@@ -5,11 +5,21 @@ import io
 import base64
 import zipfile
 import json
+
+# --- 🚨 Streamlitバージョン互換性エラーを強制回避するパッチ ---
+import streamlit.elements.image
+if not hasattr(streamlit.elements.image, 'UseColumnWith'):
+    class UseColumnWith:
+        pass
+    streamlit.elements.image.UseColumnWith = UseColumnWith
+# -----------------------------------------------------------
+
 from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
 # --- 余白自動トリミング関数（強化版） ---
 def trim_vertical_white_space(img, threshold=245):
+
     rgb_img = img.convert("RGB")
     gray = rgb_img.convert("L")
     bw = gray.point(lambda x: 0 if x >= threshold else 255)
